@@ -61,3 +61,93 @@ jobs:
             echo "- Tag: ${{ steps.discover.outputs.tag }}"
             echo "- Skip existing release: ${{ steps.release_check.outputs.skip }}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    needs: discover
+    if: needs.discover.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download manifest artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/windsurf-release
+
+      - name: Build extracted assets
+        id: build_assets
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/windsurf-release/dist"
+          python3 scripts/build_assets.py \
+            --manifest "$RUNNER_TEMP/windsurf-release/manifest.json" \
+            --dist-dir "$RUNNER_TEMP/windsurf-release/dist" \
+            --summary-out "$RUNNER_TEMP/windsurf-release/summary.json"
+
+      - name: Upload extracted assets artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windsurf-assets
+          path: ${{ runner.temp }}/windsurf-release/dist
+          if-no-files-found: ignore
+
+      - name: Upload build summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-summary
+          path: ${{ runner.temp }}/windsurf-release/summary.json
+          if-no-files-found: ignore
+
+      - name: Note skipped publication on non-default branches
+        if: github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+        run: |
+          {
+            echo "## Branch validation"
+            echo "- Publish steps are skipped on branch $GITHUB_REF_NAME"
+            echo "- Download the artifact named windsurf-assets to inspect extracted binaries"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail job when required extraction fails
+        if: steps.build_assets.outcome != 'success'
+        run: exit 1
+
+      - name: Render release notes
+        if: steps.build_assets.outcome == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        run: |
+          python3 scripts/render_release_notes.py \
+            --summary "$RUNNER_TEMP/windsurf-release/summary.json" \
+            --output "$RUNNER_TEMP/windsurf-release/release-notes.md"
+
+      - name: Create draft release
+        if: steps.build_assets.outcome == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.discover.outputs.tag }}
+          RELEASE_NAME: ${{ needs.discover.outputs.release_name }}
+        run: |
+          gh release create "$TAG" \
+            --draft \
+            --title "$RELEASE_NAME" \
+            --notes-file "$RUNNER_TEMP/windsurf-release/release-notes.md"
+
+      - name: Upload release assets
+        if: steps.build_assets.outcome == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.discover.outputs.tag }}
+        run: |
+          gh release upload "$TAG" "$RUNNER_TEMP/windsurf-release/dist/"* --clobber
+
+      - name: Publish release
+        if: steps.build_assets.outcome == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.discover.outputs.tag }}
+        run: |
+          gh release edit "$TAG" \
+            --draft=false \
+            --notes-file "$RUNNER_TEMP/windsurf-release/release-notes.md"
