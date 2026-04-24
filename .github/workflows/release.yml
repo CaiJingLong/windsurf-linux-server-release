@@ -45,7 +45,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.discover.outputs.tag }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          if [ "$GITHUB_REF_NAME" != "${{ github.event.repository.default_branch }}" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          elif gh release view "$TAG" >/dev/null 2>&1; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           elif git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -69,6 +71,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Detect publish mode
+        id: publish_mode
+        run: |
+          echo "ref_name=$GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"
+          echo "default_branch=${{ github.event.repository.default_branch }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GITHUB_REF_NAME" = "${{ github.event.repository.default_branch }}" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Download manifest artifact
         uses: actions/download-artifact@v4
@@ -103,7 +116,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Note skipped publication on non-default branches
-        if: github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+        if: steps.publish_mode.outputs.publish != 'true'
         run: |
           {
             echo "## Branch validation"
@@ -116,14 +129,14 @@ jobs:
         run: exit 1
 
       - name: Render release notes
-        if: steps.build_assets.outcome == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: steps.build_assets.outcome == 'success' && steps.publish_mode.outputs.publish == 'true'
         run: |
           python3 scripts/render_release_notes.py \
             --summary "$RUNNER_TEMP/windsurf-release/summary.json" \
             --output "$RUNNER_TEMP/windsurf-release/release-notes.md"
 
       - name: Create draft release
-        if: steps.build_assets.outcome == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: steps.build_assets.outcome == 'success' && steps.publish_mode.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.discover.outputs.tag }}
@@ -135,7 +148,7 @@ jobs:
             --notes-file "$RUNNER_TEMP/windsurf-release/release-notes.md"
 
       - name: Upload release assets
-        if: steps.build_assets.outcome == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: steps.build_assets.outcome == 'success' && steps.publish_mode.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.discover.outputs.tag }}
@@ -143,7 +156,7 @@ jobs:
           gh release upload "$TAG" "$RUNNER_TEMP/windsurf-release/dist/"* --clobber
 
       - name: Publish release
-        if: steps.build_assets.outcome == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: steps.build_assets.outcome == 'success' && steps.publish_mode.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.discover.outputs.tag }}
