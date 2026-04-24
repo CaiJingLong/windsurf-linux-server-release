@@ -1,0 +1,59 @@
+name: release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.discover.outputs.version }}
+      tag: ${{ steps.discover.outputs.tag }}
+      release_name: ${{ steps.discover.outputs.release_name }}
+      skip: ${{ steps.release_check.outputs.skip }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create manifest directory
+        run: mkdir -p "$RUNNER_TEMP/windsurf-release"
+
+      - name: Discover latest stable release
+        id: discover
+        run: |
+          python3 scripts/discover_release.py \
+            --manifest-out "$RUNNER_TEMP/windsurf-release/manifest.json"
+
+      - name: Upload manifest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/windsurf-release/manifest.json
+
+      - name: Check whether release already exists
+        id: release_check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.discover.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write discovery summary
+        run: |
+          {
+            echo "## Discovery"
+            echo "- Version: ${{ steps.discover.outputs.version }}"
+            echo "- Tag: ${{ steps.discover.outputs.tag }}"
+            echo "- Skip existing release: ${{ steps.release_check.outputs.skip }}"
+          } >> "$GITHUB_STEP_SUMMARY"
